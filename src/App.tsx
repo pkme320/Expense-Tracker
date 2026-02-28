@@ -135,12 +135,15 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
   const [driveFileId, setDriveFileId] = useState<string | null>(null);
+  const [lastSynced, setLastSynced] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null);
 
   // Load data from Google Drive
   const syncFromDrive = async (token: string) => {
     try {
       setIsSyncing(true);
+      setSyncStatus({ type: 'info', message: 'Connecting to Google Drive...' });
       const file = await googleDriveService.findFile(token);
       if (file) {
         setDriveFileId(file.id);
@@ -149,10 +152,13 @@ export default function App() {
           if (content.categories) setCategories(content.categories);
           if (content.items) setItems(content.items);
           if (content.transactions) setTransactions(content.transactions);
-          console.log('Data synced from Google Drive');
+          if (content.lastUpdated) setLastSynced(content.lastUpdated);
+          setSyncStatus({ type: 'success', message: 'Data recovered from Google Drive!' });
+          setTimeout(() => setSyncStatus(null), 3000);
         }
       } else {
-        console.log('No backup found on Google Drive, using local/seed data');
+        setSyncStatus({ type: 'info', message: 'No backup found. Starting fresh.' });
+        setTimeout(() => setSyncStatus(null), 3000);
         // Initial seed if first time
         if (categories.length === 0) {
           const cats: Category[] = [];
@@ -173,6 +179,7 @@ export default function App() {
       }
     } catch (error) {
       console.error('Drive sync error:', error);
+      setSyncStatus({ type: 'error', message: 'Failed to sync from Drive. Check connection.' });
     } finally {
       setIsSyncing(false);
     }
@@ -191,9 +198,13 @@ export default function App() {
       };
       const result = await googleDriveService.saveFile(googleAccessToken, content, driveFileId || undefined);
       if (result.id && !driveFileId) setDriveFileId(result.id);
-      console.log('Data backed up to Google Drive');
+      const now = new Date().toISOString();
+      setLastSynced(now);
+      setSyncStatus({ type: 'success', message: 'Cloud backup updated' });
+      setTimeout(() => setSyncStatus(null), 2000);
     } catch (error) {
       console.error('Drive backup error:', error);
+      setSyncStatus({ type: 'error', message: 'Backup failed. Check Drive storage.' });
     } finally {
       setIsSyncing(false);
     }
@@ -1526,33 +1537,62 @@ export default function App() {
                     </div>
                     <div className="flex items-baseline gap-2 min-w-0">
                       <span className="text-[9px] font-black text-slate-800 uppercase tracking-wider shrink-0">User Account</span>
-                      {user && <span className="text-[8px] text-slate-400 truncate opacity-70">{user.email}</span>}
+                      {user && (
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-[8px] text-slate-400 truncate opacity-70">{user.email}</span>
+                          {lastSynced && (
+                            <span className="text-[7px] text-emerald-500 font-bold uppercase tracking-tighter whitespace-nowrap">
+                              Synced: {new Date(lastSynced).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     {isSyncing && (
                       <div className="animate-spin rounded-full h-2 w-2 border-b border-indigo-600 shrink-0"></div>
                     )}
                   </div>
                   
-                  {isFirebaseMode ? (
-                    user ? (
+                  <div className="flex items-center gap-2">
+                    {user && googleAccessToken && (
                       <button 
-                        onClick={handleLogout}
-                        className="px-2 py-0.5 bg-rose-50 text-rose-600 text-[8px] font-black uppercase tracking-widest rounded-md border border-rose-100 hover:bg-rose-100 transition-colors shrink-0"
+                        onClick={() => syncFromDrive(googleAccessToken)}
+                        className="p-1 text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+                        title="Manual Sync"
                       >
-                        Logout
+                        <Download size={12} />
                       </button>
+                    )}
+                    {isFirebaseMode ? (
+                      user ? (
+                        <button 
+                          onClick={handleLogout}
+                          className="px-2 py-0.5 bg-rose-50 text-rose-600 text-[8px] font-black uppercase tracking-widest rounded-md border border-rose-100 hover:bg-rose-100 transition-colors shrink-0"
+                        >
+                          Logout
+                        </button>
+                      ) : (
+                        <button 
+                          onClick={handleGoogleLogin}
+                          className="px-2 py-0.5 bg-indigo-600 text-white text-[8px] font-black uppercase tracking-widest rounded-md shadow-sm hover:bg-indigo-700 active:scale-95 transition-all shrink-0"
+                        >
+                          Login
+                        </button>
+                      )
                     ) : (
-                      <button 
-                        onClick={handleGoogleLogin}
-                        className="px-2 py-0.5 bg-indigo-600 text-white text-[8px] font-black uppercase tracking-widest rounded-md shadow-sm hover:bg-indigo-700 active:scale-95 transition-all shrink-0"
-                      >
-                        Login
-                      </button>
-                    )
-                  ) : (
-                    <span className="text-[7px] font-black text-amber-500 uppercase tracking-widest bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100">Config Required</span>
-                  )}
+                      <span className="text-[7px] font-black text-amber-500 uppercase tracking-widest bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100">Config Required</span>
+                    )}
+                  </div>
                 </div>
+                {syncStatus && (
+                  <div className={`mt-1 text-[7px] font-bold uppercase tracking-widest text-center py-0.5 rounded ${
+                    syncStatus.type === 'success' ? 'text-emerald-600 bg-emerald-50' : 
+                    syncStatus.type === 'error' ? 'text-rose-600 bg-rose-50' : 
+                    'text-indigo-600 bg-indigo-50'
+                  }`}>
+                    {syncStatus.message}
+                  </div>
+                )}
               </section>
 
               <div className="flex items-center justify-between pt-2">

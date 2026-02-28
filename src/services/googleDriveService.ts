@@ -37,18 +37,25 @@ export const googleDriveService = {
   async saveFile(accessToken: string, content: any, existingFileId?: string) {
     const metadata = {
       name: FILE_NAME,
-      parents: ['appDataFolder'],
+      parents: existingFileId ? undefined : ['appDataFolder'],
     };
 
-    const formData = new FormData();
-    formData.append(
-      'metadata',
-      new Blob([JSON.stringify(metadata)], { type: 'application/json' })
-    );
-    formData.append(
-      'file',
-      new Blob([JSON.stringify(content)], { type: 'application/json' })
-    );
+    const boundary = '-------314159265358979323846';
+    const delimiter = "\r\n--" + boundary + "\r\n";
+    const close_delim = "\r\n--" + boundary + "--";
+
+    const contentType = 'application/json';
+    const metadataPart = JSON.stringify(metadata);
+    const contentPart = JSON.stringify(content);
+
+    const body =
+      delimiter +
+      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+      metadataPart +
+      delimiter +
+      'Content-Type: ' + contentType + '\r\n\r\n' +
+      contentPart +
+      close_delim;
 
     const url = existingFileId
       ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`
@@ -60,9 +67,16 @@ export const googleDriveService = {
       method,
       headers: {
         Authorization: `Bearer ${accessToken}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
       },
-      body: formData,
+      body: body,
     });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Drive save error response:', errorText);
+      throw new Error(`Drive save failed: ${response.status} ${errorText}`);
+    }
 
     return await response.json();
   },
