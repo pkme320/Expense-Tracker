@@ -1,0 +1,5 @@
+{
+  "name": "Expense Tracker",
+  "description": "A mobile-first expense and income tracker with smart category management and data visualization.",
+  "requestFramePermissions": []
+}
