@@ -9,14 +9,22 @@ const FILE_NAME = 'expense_tracker_backup.json';
 
 export const googleDriveService = {
   async findFile(accessToken: string) {
+    const query = encodeURIComponent(`name='${FILE_NAME}'`);
     const response = await fetch(
-      `https://www.googleapis.com/drive/v3/files?q=name='${FILE_NAME}' and spaces='appDataFolder'&fields=files(id, name)`,
+      `https://www.googleapis.com/drive/v3/files?q=${query}&spaces=appDataFolder&fields=files(id, name)`,
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,
         },
       }
     );
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Drive find error response:', errorText);
+      throw new Error(`Drive access failed: ${response.status} ${errorText}`);
+    }
+
     const data = await response.json();
     return data.files && data.files.length > 0 ? data.files[0] : null;
   },
@@ -30,7 +38,11 @@ export const googleDriveService = {
         },
       }
     );
-    if (!response.ok) return null;
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Drive read error response:', errorText);
+      throw new Error(`Drive read failed: ${response.status} ${errorText}`);
+    }
     return await response.json();
   },
 

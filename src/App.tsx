@@ -137,7 +137,8 @@ export default function App() {
   const [driveFileId, setDriveFileId] = useState<string | null>(null);
   const [lastSynced, setLastSynced] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<{ type: 'success' | 'error' | 'info', message: string } | null>(null);
+  const [syncStatus, setSyncStatus] = useState<{ type: 'success' | 'error' | 'info', message: string, detail?: string } | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
 
   // Load data from Google Drive
   const syncFromDrive = async (token: string) => {
@@ -177,9 +178,19 @@ export default function App() {
           setItems(itemsList);
         }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Drive sync error:', error);
-      setSyncStatus({ type: 'error', message: 'Failed to sync from Drive. Check connection.' });
+      const errorMsg = error.message || 'Unknown error';
+      if (errorMsg.includes('403') || errorMsg.includes('401')) {
+        setSyncStatus({ 
+          type: 'error', 
+          message: 'Access Denied. Re-connect Drive.', 
+          detail: 'Google Drive API might be disabled or session expired. Error: ' + errorMsg 
+        });
+        setGoogleAccessToken(null);
+      } else {
+        setSyncStatus({ type: 'error', message: `Sync Error`, detail: errorMsg });
+      }
     } finally {
       setIsSyncing(false);
     }
@@ -202,9 +213,19 @@ export default function App() {
       setLastSynced(now);
       setSyncStatus({ type: 'success', message: 'Cloud backup updated' });
       setTimeout(() => setSyncStatus(null), 2000);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Drive backup error:', error);
-      setSyncStatus({ type: 'error', message: 'Backup failed. Check Drive storage.' });
+      const errorMsg = error.message || 'Unknown error';
+      if (errorMsg.includes('403') || errorMsg.includes('401')) {
+        setSyncStatus({ 
+          type: 'error', 
+          message: 'Sync Paused. Re-connect Drive.', 
+          detail: 'Token expired or Drive API disabled. Error: ' + errorMsg 
+        });
+        setGoogleAccessToken(null);
+      } else {
+        setSyncStatus({ type: 'error', message: `Backup failed`, detail: errorMsg });
+      }
     } finally {
       setIsSyncing(false);
     }
@@ -1554,14 +1575,26 @@ export default function App() {
                   </div>
                   
                   <div className="flex items-center gap-2">
-                    {user && googleAccessToken && (
+                    {user && !googleAccessToken && (
                       <button 
-                        onClick={() => syncFromDrive(googleAccessToken)}
-                        className="p-1 text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
-                        title="Manual Sync"
+                        onClick={handleGoogleLogin}
+                        className="px-2 py-0.5 bg-amber-50 text-amber-600 text-[8px] font-black uppercase tracking-widest rounded-md border border-amber-100 hover:bg-amber-100 transition-colors shrink-0 flex items-center gap-1"
                       >
-                        <Download size={12} />
+                        <Settings size={10} />
+                        Connect Drive
                       </button>
+                    )}
+                    {user && googleAccessToken && (
+                      <div className="flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" title="Drive Connected" />
+                        <button 
+                          onClick={() => syncFromDrive(googleAccessToken)}
+                          className="p-1 text-indigo-600 hover:bg-indigo-50 rounded-md transition-colors"
+                          title="Manual Sync"
+                        >
+                          <Download size={12} />
+                        </button>
+                      </div>
                     )}
                     {isFirebaseMode ? (
                       user ? (
@@ -1584,13 +1617,48 @@ export default function App() {
                     )}
                   </div>
                 </div>
+                {user && !googleAccessToken && (
+                  <button 
+                    onClick={handleGoogleLogin}
+                    className="w-full mt-2 flex items-center justify-center gap-2 bg-amber-50 border border-amber-200 p-2 rounded-xl font-black text-[10px] text-amber-700 hover:bg-amber-100 active:scale-95 transition-all shadow-sm animate-bounce"
+                  >
+                    <Settings size={14} />
+                    ACTIVATE CLOUD BACKUP (TAP HERE)
+                  </button>
+                )}
+
                 {syncStatus && (
-                  <div className={`mt-1 text-[7px] font-bold uppercase tracking-widest text-center py-0.5 rounded ${
-                    syncStatus.type === 'success' ? 'text-emerald-600 bg-emerald-50' : 
-                    syncStatus.type === 'error' ? 'text-rose-600 bg-rose-50' : 
-                    'text-indigo-600 bg-indigo-50'
-                  }`}>
-                    {syncStatus.message}
+                  <div className="mt-2 space-y-1">
+                    <div 
+                      onClick={() => syncStatus.detail && setShowDebug(!showDebug)}
+                      className={`text-[8px] font-black uppercase tracking-widest text-center py-1.5 rounded-lg cursor-pointer shadow-sm border ${
+                        syncStatus.type === 'success' ? 'text-emerald-700 bg-emerald-50 border-emerald-100' : 
+                        syncStatus.type === 'error' ? 'text-rose-700 bg-rose-50 border-rose-100' : 
+                        'text-indigo-700 bg-indigo-50 border-indigo-100'
+                      }`}
+                    >
+                      {syncStatus.message}
+                      {syncStatus.detail && <span className="ml-2 opacity-60 underline">Troubleshoot</span>}
+                    </div>
+                    {showDebug && syncStatus.detail && (
+                      <motion.div 
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        className="p-3 bg-slate-900 rounded-xl text-[8px] font-mono text-slate-300 break-all leading-relaxed border border-slate-700 shadow-inner"
+                      >
+                        <p className="text-rose-400 font-bold mb-2 uppercase tracking-tighter">Technical Error Log:</p>
+                        {syncStatus.detail}
+                        <div className="mt-3 pt-2 border-t border-slate-700 space-y-2">
+                          <p className="text-amber-400 font-bold uppercase tracking-tighter">How to fix this:</p>
+                          <ol className="list-decimal list-inside space-y-1 text-slate-400">
+                            <li>Go to <span className="text-white">console.cloud.google.com</span></li>
+                            <li>Enable <span className="text-white">"Google Drive API"</span></li>
+                            <li>Ensure <span className="text-white">"OAuth Consent Screen"</span> is in Production</li>
+                            <li>Add your Netlify URL to <span className="text-white">Firebase Authorized Domains</span></li>
+                          </ol>
+                        </div>
+                      </motion.div>
+                    )}
                   </div>
                 )}
               </section>

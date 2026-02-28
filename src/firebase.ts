@@ -17,7 +17,10 @@ let db: Firestore | null = null;
 let auth: Auth | null = null;
 const googleProvider = new GoogleAuthProvider();
 googleProvider.addScope('https://www.googleapis.com/auth/drive.appdata');
-googleProvider.addScope('https://www.googleapis.com/auth/drive.file');
+googleProvider.setCustomParameters({ 
+  prompt: 'consent',
+  access_type: 'offline' 
+});
 
 if (isFirebaseConfigured) {
   try {
