@@ -133,7 +133,12 @@ export default function App() {
   const [isViewAllModalOpen, setIsViewAllModalOpen] = useState(false);
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
-  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(null);
+  const [googleAccessToken, setGoogleAccessToken] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('tracker_google_token');
+    }
+    return null;
+  });
   const [driveFileId, setDriveFileId] = useState<string | null>(null);
   const [lastSynced, setLastSynced] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -188,6 +193,7 @@ export default function App() {
           detail: 'Google Drive API might be disabled or session expired. Error: ' + errorMsg 
         });
         setGoogleAccessToken(null);
+        localStorage.removeItem('tracker_google_token');
       } else {
         setSyncStatus({ type: 'error', message: `Sync Error`, detail: errorMsg });
       }
@@ -223,6 +229,7 @@ export default function App() {
           detail: 'Token expired or Drive API disabled. Error: ' + errorMsg 
         });
         setGoogleAccessToken(null);
+        localStorage.removeItem('tracker_google_token');
       } else {
         setSyncStatus({ type: 'error', message: `Backup failed`, detail: errorMsg });
       }
@@ -240,6 +247,13 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [categories, items, transactions, user, googleAccessToken]);
+
+  // Initial sync from Drive when token is available
+  useEffect(() => {
+    if (user && googleAccessToken && !driveFileId && !isSyncing) {
+      syncFromDrive(googleAccessToken);
+    }
+  }, [user, googleAccessToken]);
 
   useEffect(() => {
     if (isFirebaseConfigured && firebaseAuth) {
@@ -262,11 +276,16 @@ export default function App() {
       const token = credential?.accessToken;
       if (token) {
         setGoogleAccessToken(token);
+        localStorage.setItem('tracker_google_token', token);
         await syncFromDrive(token);
       }
     } catch (error) {
       console.error('Login error:', error);
-      alert('Failed to sign in with Google');
+      setSyncStatus({ 
+        type: 'error', 
+        message: 'Login Failed', 
+        detail: 'Could not connect to Google. Ensure popups are allowed.' 
+      });
     }
   };
 
@@ -274,6 +293,8 @@ export default function App() {
     if (!firebaseAuth) return;
     try {
       await signOut(firebaseAuth);
+      setGoogleAccessToken(null);
+      localStorage.removeItem('tracker_google_token');
       setView('dashboard');
     } catch (error) {
       console.error('Logout error:', error);
