@@ -60,14 +60,15 @@ export const googleDriveService = {
     const metadataPart = JSON.stringify(metadata);
     const contentPart = JSON.stringify(content);
 
-    const body =
-      delimiter +
-      'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-      metadataPart +
-      delimiter +
-      'Content-Type: ' + contentType + '\r\n\r\n' +
-      contentPart +
-      close_delim;
+    const body = new Blob([
+      delimiter,
+      'Content-Type: application/json; charset=UTF-8\r\n\r\n',
+      metadataPart,
+      delimiter,
+      'Content-Type: ', contentType, '\r\n\r\n',
+      contentPart,
+      close_delim
+    ], { type: `multipart/related; boundary=${boundary}` });
 
     const url = existingFileId
       ? `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=multipart`
@@ -79,7 +80,6 @@ export const googleDriveService = {
       method,
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        'Content-Type': `multipart/related; boundary=${boundary}`,
       },
       body: body,
     });

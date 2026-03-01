@@ -38,7 +38,7 @@ import { Category, Item, Transaction, Summary } from './types';
 import { firebaseService } from './services/firebaseService';
 import { googleDriveService } from './services/googleDriveService';
 import { isFirebaseConfigured, auth as firebaseAuth, googleProvider } from './firebase';
-import { onAuthStateChanged, signInWithPopup, signOut, User as FirebaseUser, GoogleAuthProvider } from 'firebase/auth';
+import { onAuthStateChanged, signInWithPopup, signOut, User as FirebaseUser, GoogleAuthProvider, signInWithRedirect, getRedirectResult } from 'firebase/auth';
 
 type View = 'dashboard' | 'add' | 'history' | 'insights' | 'manage';
 
@@ -51,8 +51,6 @@ const SEED_DATA: Record<string, string[]> = {
   "Internet_Bill": ["Home@HYD", "Others"],
   "Phone_Bills": ["My Self", "Wife", "Home@Pavitra", "TV EMI", "Tredmill EMI", "Others"],
   "Gas_Bill": ["Home@HYD", "Home@NNB", "Indus Ind (Pavitra)", "Mother", "Brother", "Sister", "Mother in law", "Others"],
-  "Loan_Repayments": ["Indus Ind (PK)", "Yes Bank (Pavitra)", "Indus Ind", "HDFC", "RBL", "Others"],
-  "Creditcard_Payments": ["Amazon ICICI", "TATA SBI", "Indus Ind", "HDFC", "RBL", "One Card", "Airtel Axis", "Flipkart Axis"],
   "Savings": ["General Savings"],
   "Toilet_Floor_Maintenance": ["Floor Cleaner", "Harpic", "Mop Sticks & Sets", "Mop Buckets", "Floor Mats", "Acids", "Toilet Brush", "Others"],
   "Trash_Management": ["Trash Vehicle", "Garbage Bags", "Brooms", "Dust Pan (Cheta)", "Dust Bin", "Others"],
@@ -86,7 +84,14 @@ const SEED_DATA: Record<string, string[]> = {
 
 export default function App() {
   const [view, setView] = useState<View>('dashboard');
-  const [dashboardMonth, setDashboardMonth] = useState(new Date().toISOString().slice(0, 7));
+  const [dashboardMonth, setDashboardMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [historyMonth, setHistoryMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  });
   const [categories, setCategories] = useState<Category[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -104,13 +109,22 @@ export default function App() {
   
   // Insights Filters
   const [insightPeriod, setInsightPeriod] = useState<'month' | '7d' | '30d' | 'ytd' | 'all'>('month');
-  const [insightMonth, setInsightMonth] = useState(new Date().toISOString().slice(0, 7)); // YYYY-MM
+  const [insightMonth, setInsightMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  }); // YYYY-MM
   const [insightCategory, setInsightCategory] = useState<string>('all');
 
   // Form State
   const [type, setType] = useState<'expense' | 'income'>('expense');
   const [amount, setAmount] = useState('');
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [date, setDate] = useState(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  });
   const [purchasedBy, setPurchasedBy] = useState('');
   const [categoryName, setCategoryName] = useState('');
   const [itemName, setItemName] = useState('');
@@ -186,7 +200,14 @@ export default function App() {
     } catch (error: any) {
       console.error('Drive sync error:', error);
       const errorMsg = error.message || 'Unknown error';
-      if (errorMsg.includes('403') || errorMsg.includes('401')) {
+      
+      if (errorMsg === 'Failed to fetch') {
+        setSyncStatus({ 
+          type: 'error', 
+          message: 'Network Error', 
+          detail: 'Could not reach Google. This usually happens due to a poor connection or browser blocking the request. Try re-connecting your Drive.' 
+        });
+      } else if (errorMsg.includes('403') || errorMsg.includes('401')) {
         setSyncStatus({ 
           type: 'error', 
           message: 'Access Denied. Re-connect Drive.', 
@@ -203,14 +224,14 @@ export default function App() {
   };
 
   // Save data to Google Drive
-  const syncToDrive = async () => {
+  const syncToDrive = async (overrideData?: { categories?: Category[], items?: Item[], transactions?: Transaction[] }) => {
     if (!googleAccessToken || !user) return;
     try {
       setIsSyncing(true);
       const content = {
-        categories,
-        items,
-        transactions,
+        categories: overrideData?.categories || categories,
+        items: overrideData?.items || items,
+        transactions: overrideData?.transactions || transactions,
         lastUpdated: new Date().toISOString()
       };
       const result = await googleDriveService.saveFile(googleAccessToken, content, driveFileId || undefined);
@@ -222,7 +243,14 @@ export default function App() {
     } catch (error: any) {
       console.error('Drive backup error:', error);
       const errorMsg = error.message || 'Unknown error';
-      if (errorMsg.includes('403') || errorMsg.includes('401')) {
+      
+      if (errorMsg === 'Failed to fetch') {
+        setSyncStatus({ 
+          type: 'error', 
+          message: 'Backup Failed (Network)', 
+          detail: 'Connection lost or blocked by browser. Your data is saved locally but not in the cloud. Try re-connecting Drive.' 
+        });
+      } else if (errorMsg.includes('403') || errorMsg.includes('401')) {
         setSyncStatus({ 
           type: 'error', 
           message: 'Sync Paused. Re-connect Drive.', 
@@ -243,20 +271,56 @@ export default function App() {
     if (user && googleAccessToken && (categories.length > 0 || transactions.length > 0)) {
       const timer = setTimeout(() => {
         syncToDrive();
-      }, 2000); // Debounce backup
+      }, 500); // Reduced debounce for faster sync
       return () => clearTimeout(timer);
     }
   }, [categories, items, transactions, user, googleAccessToken]);
 
-  // Initial sync from Drive when token is available
+  // Initial sync from Drive when token is available or app is opened
   useEffect(() => {
-    if (user && googleAccessToken && !driveFileId && !isSyncing) {
+    if (user && googleAccessToken && !isSyncing) {
       syncFromDrive(googleAccessToken);
     }
   }, [user, googleAccessToken]);
 
+  // Sync when coming back online or app is focused (mobile resume)
+  useEffect(() => {
+    const handleSync = () => {
+      if (user && googleAccessToken && !isSyncing) {
+        // First try to push any local changes made while offline
+        syncToDrive().then(() => {
+          // Then refresh to get any remote changes
+          syncFromDrive(googleAccessToken);
+        });
+      }
+    };
+
+    window.addEventListener('online', handleSync);
+    window.addEventListener('focus', handleSync);
+    
+    return () => {
+      window.removeEventListener('online', handleSync);
+      window.removeEventListener('focus', handleSync);
+    };
+  }, [user, googleAccessToken, isSyncing, categories, items, transactions]);
+
   useEffect(() => {
     if (isFirebaseConfigured && firebaseAuth) {
+      // Handle redirect result for mobile
+      getRedirectResult(firebaseAuth).then((result) => {
+        if (result) {
+          const credential = GoogleAuthProvider.credentialFromResult(result);
+          const token = credential?.accessToken;
+          if (token) {
+            setGoogleAccessToken(token);
+            localStorage.setItem('tracker_google_token', token);
+            syncFromDrive(token);
+          }
+        }
+      }).catch((error) => {
+        console.error('Redirect result error:', error);
+      });
+
       const unsubscribe = onAuthStateChanged(firebaseAuth, (currentUser) => {
         setUser(currentUser);
         setAuthLoading(false);
@@ -270,7 +334,16 @@ export default function App() {
 
   const handleGoogleLogin = async () => {
     if (!firebaseAuth) return;
+    
+    // Check if mobile to use redirect instead of popup
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    
     try {
+      if (isMobile) {
+        await signInWithRedirect(firebaseAuth, googleProvider);
+        return;
+      }
+      
       const result = await signInWithPopup(firebaseAuth, googleProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
       const token = credential?.accessToken;
@@ -279,13 +352,21 @@ export default function App() {
         localStorage.setItem('tracker_google_token', token);
         await syncFromDrive(token);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Login error:', error);
-      setSyncStatus({ 
-        type: 'error', 
-        message: 'Login Failed', 
-        detail: 'Could not connect to Google. Ensure popups are allowed.' 
-      });
+      if (error.code === 'auth/popup-closed-by-user') {
+        setSyncStatus({ 
+          type: 'info', 
+          message: 'Sign-in Cancelled', 
+          detail: 'The sign-in window was closed. Please try again and keep the window open until finished.' 
+        });
+      } else {
+        setSyncStatus({ 
+          type: 'error', 
+          message: 'Login Failed', 
+          detail: 'Could not connect to Google. Ensure popups are allowed and try again.' 
+        });
+      }
     }
   };
 
@@ -494,13 +575,19 @@ export default function App() {
 
     if (isFirebaseMode && user) {
       // In Drive mode, we update local state and let the useEffect handle the backup
+      let newTrans;
       if (editingId) {
-        setTransactions(prev => prev.map(t => t.id === editingId ? { ...t, ...payload } : t));
+        newTrans = transactions.map(t => t.id === editingId ? { ...t, ...payload } : t);
       } else {
-        setTransactions(prev => [{ ...payload, id: Date.now(), created_at: new Date().toISOString() }, ...prev]);
+        newTrans = [{ ...payload, id: Date.now(), created_at: new Date().toISOString() } as Transaction, ...transactions];
       }
+      setTransactions(newTrans);
       setView('dashboard');
       resetForm();
+      // Immediate sync to Drive if configured
+      if (googleAccessToken) {
+        syncToDrive({ transactions: newTrans });
+      }
       return;
     }
 
@@ -567,8 +654,12 @@ export default function App() {
     const id = deleteConfirmId;
     
     if (isFirebaseMode && user) {
-      setTransactions(prev => prev.filter(t => t.id !== id));
+      const newTrans = transactions.filter(t => t.id !== id);
+      setTransactions(newTrans);
       setDeleteConfirmId(null);
+      if (googleAccessToken) {
+        syncToDrive({ transactions: newTrans });
+      }
       return;
     }
 
@@ -606,9 +697,14 @@ export default function App() {
 
     if (isFirebaseMode && user) {
       const newId = Date.now();
-      setCategories(prev => [...prev, { id: newId, name: newCatName, type: newCatType }]);
+      const newCats = [...categories, { id: newId, name: newCatName, type: newCatType }];
+      setCategories(newCats);
       setNewCatName('');
       setNewItemCatId(newId);
+      // Immediate sync to Drive if configured
+      if (googleAccessToken) {
+        syncToDrive({ categories: newCats });
+      }
       alert('Category added! Now you can register items for this category below.');
       return;
     }
@@ -649,11 +745,16 @@ export default function App() {
 
     if (isFirebaseMode && user) {
       const newId = Date.now();
-      setItems(prev => [...prev, { id: newId, category_id: newItemCatId, name: newItemName }]);
+      const newItems = [...items, { id: newId, category_id: Number(newItemCatId), name: newItemName }];
+      setItems(newItems);
       setNewItemName('');
+      // Immediate sync to Drive if configured
+      if (googleAccessToken) {
+        syncToDrive({ items: newItems });
+      }
       if (confirm('Item registered! Would you like to go to the Add Transaction screen now?')) {
         setView('add');
-        const cat = categories.find(c => c.id === newItemCatId);
+        const cat = categories.find(c => c.id === Number(newItemCatId));
         if (cat) {
           setCategoryName(cat.name);
           setType(cat.type);
@@ -780,26 +881,49 @@ export default function App() {
     setCategoryName('');
     setItemName('');
     setDescription('');
-    setDate(new Date().toISOString().split('T')[0]);
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    setDate(`${year}-${month}-${day}`);
     setIsNewCategory(false);
     setIsNewItem(false);
   };
 
   const setToday = () => {
-    const today = new Date().toISOString().split('T')[0];
-    setDate(today);
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    setDate(`${year}-${month}-${day}`);
     setIsCalendarOpen(false);
   };
 
   const handleDateSelect = (selectedDate: Date) => {
-    setDate(selectedDate.toISOString().split('T')[0]);
+    const year = selectedDate.getFullYear();
+    const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+    const day = String(selectedDate.getDate()).padStart(2, '0');
+    setDate(`${year}-${month}-${day}`);
     setIsCalendarOpen(false);
+  };
+
+  const formatDateDisplay = (dateStr: string) => {
+    if (!dateStr) return '';
+    const [year, month, day] = dateStr.split('-');
+    return `${day}-${month}-${year}`;
   };
 
   const changeMonth = (offset: number) => {
     const newMonth = new Date(calendarMonth);
     newMonth.setMonth(newMonth.getMonth() + offset);
     setCalendarMonth(newMonth);
+  };
+
+  const toLocalDateString = (d: Date) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   };
 
   const calendarDays = useMemo(() => {
@@ -846,7 +970,9 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.setAttribute('href', url);
-    link.setAttribute('download', `expense_tracker_export_${new Date().toISOString().split('T')[0]}.csv`);
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    link.setAttribute('download', `expense_tracker_export_${todayStr}.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
@@ -868,7 +994,7 @@ export default function App() {
     let filtered = transactions.filter(t => t.type === 'expense');
     
     const now = new Date();
-    const todayStr = now.toISOString().split('T')[0];
+    const todayStr = toLocalDateString(now);
     
     if (insightPeriod === 'month') {
       if (insightMonth !== 'all') {
@@ -877,12 +1003,12 @@ export default function App() {
     } else if (insightPeriod === '7d') {
       const sevenDaysAgo = new Date();
       sevenDaysAgo.setDate(now.getDate() - 7);
-      const sevenDaysAgoStr = sevenDaysAgo.toISOString().split('T')[0];
+      const sevenDaysAgoStr = toLocalDateString(sevenDaysAgo);
       filtered = filtered.filter(t => t.date >= sevenDaysAgoStr && t.date <= todayStr);
     } else if (insightPeriod === '30d') {
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(now.getDate() - 30);
-      const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
+      const thirtyDaysAgoStr = toLocalDateString(thirtyDaysAgo);
       filtered = filtered.filter(t => t.date >= thirtyDaysAgoStr && t.date <= todayStr);
     } else if (insightPeriod === 'ytd') {
       const startOfYear = `${now.getFullYear()}-01-01`;
@@ -940,7 +1066,7 @@ export default function App() {
         
         <div className="flex justify-between items-center mb-1 relative z-10">
           <div>
-            <h1 className="text-xs font-black uppercase tracking-widest text-slate-800">
+            <h1 className="text-sm font-black uppercase tracking-widest text-slate-800">
               {view === 'dashboard' ? 'Expense Tracker' : 
                view === 'add' ? 'Add Transaction' :
                view === 'insights' ? 'Financial Insights' : 
@@ -950,13 +1076,13 @@ export default function App() {
           {user && (
             <button 
               onClick={handleLogout}
-              className="flex items-center gap-2 p-1 pl-2 bg-slate-100 rounded-full border border-slate-200 hover:bg-slate-200 transition-colors"
+              className="flex items-center gap-2 p-1.5 pl-3 bg-slate-100 rounded-full border border-slate-200 hover:bg-slate-200 transition-colors"
             >
-              <span className="text-[9px] font-bold text-slate-600 truncate max-w-[80px]">{user.displayName || user.email}</span>
+              <span className="text-[10px] font-bold text-slate-600 truncate max-w-[100px]">{user.displayName || user.email}</span>
               {user.photoURL ? (
-                <img src={user.photoURL} alt="profile" className="w-5 h-5 rounded-full border border-white" referrerPolicy="no-referrer" />
+                <img src={user.photoURL} alt="profile" className="w-6 h-6 rounded-full border border-white" referrerPolicy="no-referrer" />
               ) : (
-                <div className="w-5 h-5 rounded-full bg-indigo-500 flex items-center justify-center text-[8px] text-white font-bold">
+                <div className="w-6 h-6 rounded-full bg-indigo-500 flex items-center justify-center text-[10px] text-white font-bold">
                   {user.email?.[0].toUpperCase()}
                 </div>
               )}
@@ -966,9 +1092,9 @@ export default function App() {
 
         {view === 'dashboard' && (
           <div className="space-y-3 relative z-10">
-            <div className="bg-white/80 p-3 rounded-2xl border border-white shadow-sm">
-              <div className="flex justify-between items-center mb-0.5">
-                <p className="text-slate-400 text-[9px] font-black uppercase tracking-widest">Available Balance</p>
+            <div className="bg-white/80 p-4 rounded-2xl border border-white shadow-sm">
+              <div className="flex justify-between items-center mb-1">
+                <p className="text-slate-400 text-[10px] font-black uppercase tracking-widest">Available Balance</p>
                 <div className="relative">
                   <select 
                     value={dashboardMonth}
@@ -980,21 +1106,28 @@ export default function App() {
                         {new Date(m + '-01').toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
                       </option>
                     ))}
-                    {!availableMonths.includes(new Date().toISOString().slice(0, 7)) && (
-                      <option value={new Date().toISOString().slice(0, 7)}>
-                        {new Date().toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
-                      </option>
-                    )}
+                    {(() => {
+                      const now = new Date();
+                      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+                      if (!availableMonths.includes(currentMonth)) {
+                        return (
+                          <option value={currentMonth}>
+                            {new Date().toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}
+                          </option>
+                        );
+                      }
+                      return null;
+                    })()}
                   </select>
-                  <span className="text-[9px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full font-black uppercase tracking-widest flex items-center gap-1 border border-indigo-100">
+                  <span className="text-[10px] bg-indigo-50 text-indigo-600 px-2.5 py-1 rounded-full font-black uppercase tracking-widest flex items-center gap-1 border border-indigo-100">
                     {new Date(dashboardMonth + '-01').toLocaleDateString(undefined, { month: 'long' })}
-                    <ChevronDown size={10} />
+                    <ChevronDown size={12} />
                   </span>
                 </div>
               </div>
-              <div className="flex items-baseline gap-0.5">
-                <span className={`text-xl font-medium ${(summary?.balance || 0) >= 0 ? 'text-emerald-600/50' : 'text-rose-600/50'}`}>₹</span>
-                <h2 className={`text-3xl font-black tracking-tight ${(summary?.balance || 0) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+              <div className="flex items-baseline gap-1">
+                <span className={`text-2xl font-medium ${(summary?.balance || 0) >= 0 ? 'text-emerald-600/50' : 'text-rose-600/50'}`}>₹</span>
+                <h2 className={`text-4xl font-black tracking-tight ${(summary?.balance || 0) >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                   {(summary?.balance || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
                 </h2>
               </div>
@@ -1003,25 +1136,25 @@ export default function App() {
             <div className="grid grid-cols-2 gap-3">
               <button 
                 onClick={() => { setType('income'); setView('add'); }}
-                className="bg-emerald-50/50 p-3 rounded-2xl border border-emerald-100/50 backdrop-blur-sm text-left relative active:scale-95 transition-transform"
+                className="bg-emerald-50/50 p-4 rounded-2xl border border-emerald-100/50 backdrop-blur-sm text-left relative active:scale-95 transition-transform"
               >
-                <Plus size={12} className="absolute top-3 right-3 text-emerald-600/50" />
-                <div className="flex items-center gap-2 text-emerald-600 mb-1">
-                  <TrendingUp size={12} />
-                  <span className="text-[9px] font-black uppercase tracking-wider">Income</span>
+                <Plus size={14} className="absolute top-4 right-4 text-emerald-600/50" />
+                <div className="flex items-center gap-2 text-emerald-600 mb-1.5">
+                  <TrendingUp size={14} />
+                  <span className="text-[10px] font-black uppercase tracking-wider">Income</span>
                 </div>
-                <p className="font-black text-lg text-slate-800">₹{(summary?.total_income || 0).toLocaleString('en-IN')}</p>
+                <p className="font-black text-xl text-slate-800">₹{(summary?.total_income || 0).toLocaleString('en-IN')}</p>
               </button>
               <button 
                 onClick={() => { setType('expense'); setView('add'); }}
-                className="bg-rose-50/50 p-3 rounded-2xl border border-rose-100/50 backdrop-blur-sm text-left relative active:scale-95 transition-transform"
+                className="bg-rose-50/50 p-4 rounded-2xl border border-rose-100/50 backdrop-blur-sm text-left relative active:scale-95 transition-transform"
               >
-                <Plus size={12} className="absolute top-3 right-3 text-rose-600/50" />
-                <div className="flex items-center gap-2 text-rose-600 mb-1">
-                  <TrendingDown size={12} />
-                  <span className="text-[9px] font-black uppercase tracking-wider">Expense</span>
+                <Plus size={14} className="absolute top-4 right-4 text-rose-600/50" />
+                <div className="flex items-center gap-2 text-rose-600 mb-1.5">
+                  <TrendingDown size={14} />
+                  <span className="text-[10px] font-black uppercase tracking-wider">Expense</span>
                 </div>
-                <p className="font-black text-lg text-slate-800">₹{(summary?.total_expense || 0).toLocaleString('en-IN')}</p>
+                <p className="font-black text-xl text-slate-800">₹{(summary?.total_expense || 0).toLocaleString('en-IN')}</p>
               </button>
             </div>
           </div>
@@ -1065,11 +1198,11 @@ export default function App() {
             >
               <section>
                 <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-slate-900 font-black text-lg flex items-center gap-2">
-                    <History size={20} className="text-indigo-600" />
+                  <h3 className="text-slate-900 font-black text-xl flex items-center gap-2">
+                    <History size={22} className="text-indigo-600" />
                     Recent Activity
                   </h3>
-                  <button onClick={() => setView('history')} className="text-indigo-600 text-[10px] font-black uppercase tracking-widest hover:underline">
+                  <button onClick={() => setView('history')} className="text-indigo-600 text-[11px] font-black uppercase tracking-widest hover:underline">
                     View All
                   </button>
                 </div>
@@ -1085,21 +1218,21 @@ export default function App() {
                       transition={{ delay: idx * 0.05 }}
                       className="bg-white p-2 rounded-xl shadow-sm border border-slate-100 flex items-center justify-between group hover:shadow-md transition-shadow"
                     >
-                      <div className="flex items-center gap-2">
-                        <div className={`p-1.5 rounded-lg ${t.type === 'income' ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
-                          {t.type === 'income' ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
+                      <div className="flex items-center gap-3">
+                        <div className={`p-2 rounded-xl ${t.type === 'income' ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
+                          {t.type === 'income' ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
                         </div>
                         <div>
-                          <p className="font-black text-slate-900 leading-tight text-xs">{t.item_name}</p>
-                          <p className="text-[8px] font-bold text-slate-400 uppercase tracking-wider">{t.category_name}</p>
+                          <p className="font-black text-slate-900 leading-tight text-sm">{t.item_name}</p>
+                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">{t.category_name}</p>
                         </div>
                       </div>
                       <div className="text-right">
-                        <p className={`font-black text-sm ${t.type === 'income' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        <p className={`font-black text-base ${t.type === 'income' ? 'text-emerald-600' : 'text-rose-600'}`}>
                           {t.type === 'income' ? '+' : '-'}₹{t.amount.toLocaleString('en-IN')}
                         </p>
-                        <p className="text-[8px] font-bold text-slate-300 uppercase tracking-tighter">
-                          {new Date(t.date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}
+                        <p className="text-[9px] font-bold text-slate-300 uppercase tracking-tighter">
+                          {formatDateDisplay(t.date)}
                         </p>
                       </div>
                     </motion.div>
@@ -1132,10 +1265,10 @@ export default function App() {
                     >
                       <div className="flex justify-between items-center mb-2">
                         <div className="flex items-center gap-2">
-                          <div className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
-                          <span className="text-[10px] font-black text-slate-700 uppercase tracking-wider">{cat.name}</span>
+                          <div className="w-2 h-2 rounded-full bg-indigo-500" />
+                          <span className="text-[11px] font-black text-slate-700 uppercase tracking-wider">{cat.name}</span>
                         </div>
-                        <span className="font-black text-slate-900 text-xs">₹{cat.total.toLocaleString('en-IN')}</span>
+                        <span className="font-black text-slate-900 text-sm">₹{cat.total.toLocaleString('en-IN')}</span>
                       </div>
                       <div className="h-2 bg-slate-50 rounded-full overflow-hidden border border-slate-100 p-0.5">
                         <motion.div 
@@ -1161,36 +1294,36 @@ export default function App() {
               className="bg-white rounded-3xl p-6 shadow-xl border border-slate-100"
             >
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-bold text-slate-900">{editingId ? 'Edit Record' : 'New Record'}</h2>
+                <h2 className="text-2xl font-bold text-slate-900">{editingId ? 'Edit Record' : 'New Record'}</h2>
                 <button onClick={() => { setView('dashboard'); resetForm(); }} className="text-slate-400">
-                  <X size={24} />
+                  <X size={26} />
                 </button>
               </div>
 
-              <form onSubmit={handleSubmit} className="space-y-5">
+              <form onSubmit={handleSubmit} className="space-y-6">
                 {/* Type Selector */}
-                <div className="flex p-1 bg-slate-100 rounded-xl">
+                <div className="flex p-1.5 bg-slate-100 rounded-xl">
                   <button
                     type="button"
                     onClick={() => setType('expense')}
-                    className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${type === 'expense' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500'}`}
+                    className={`flex-1 py-2.5 rounded-lg text-base font-bold transition-all ${type === 'expense' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500'}`}
                   >
                     Expense
                   </button>
                   <button
                     type="button"
                     onClick={() => setType('income')}
-                    className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all ${type === 'income' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}
+                    className={`flex-1 py-2.5 rounded-lg text-base font-bold transition-all ${type === 'income' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}
                   >
                     Income
                   </button>
                 </div>
 
                 {/* Amount */}
-                <div className="space-y-1">
-                  <label className="text-xs font-bold text-slate-500 uppercase">Amount</label>
+                <div className="space-y-1.5">
+                  <label className="text-sm font-bold text-slate-500 uppercase">Amount</label>
                   <div className="relative">
-                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold">₹</span>
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-lg">₹</span>
                     <input
                       type="number"
                       step="0.01"
@@ -1198,48 +1331,48 @@ export default function App() {
                       value={amount}
                       onChange={(e) => setAmount(e.target.value)}
                       placeholder="0.00"
-                      className="w-full pl-8 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-lg"
+                      className="w-full pl-10 pr-4 py-4 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 outline-none font-bold text-xl"
                     />
                   </div>
                 </div>
 
                 {/* Date & Purchased By */}
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-500 uppercase">Date</label>
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-bold text-slate-500 uppercase">Date</label>
                     <button
                       type="button"
                       onClick={() => {
                         setCalendarMonth(new Date(date));
                         setIsCalendarOpen(true);
                       }}
-                      className="w-full flex items-center gap-3 pl-3 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none text-left"
+                      className="w-full flex items-center gap-3 pl-3 pr-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-base outline-none text-left"
                     >
-                      <Calendar size={16} className="text-slate-400 shrink-0" />
+                      <Calendar size={18} className="text-slate-400 shrink-0" />
                       <span className="truncate font-medium text-slate-700">
-                        {new Date(date).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
+                        {formatDateDisplay(date)}
                       </span>
                     </button>
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-xs font-bold text-slate-500 uppercase">By</label>
+                  <div className="space-y-1.5">
+                    <label className="text-sm font-bold text-slate-500 uppercase">By</label>
                     <div className="relative">
-                      <User size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                      <User size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                       <input
                         type="text"
                         value={purchasedBy}
                         onChange={(e) => setPurchasedBy(e.target.value)}
                         placeholder="Name"
-                        className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none"
+                        className="w-full pl-10 pr-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-base outline-none"
                       />
                     </div>
                   </div>
                 </div>
 
                 {/* Category */}
-                <div className="space-y-1">
+                <div className="space-y-1.5">
                   <div className="flex justify-between items-center">
-                    <label className="text-xs font-bold text-slate-500 uppercase">Category</label>
+                    <label className="text-sm font-bold text-slate-500 uppercase">Category</label>
                     <button 
                       type="button"
                       onClick={() => {
@@ -1247,13 +1380,13 @@ export default function App() {
                         setCategoryName('');
                         setItemName('');
                       }}
-                      className="text-[10px] font-bold text-indigo-600 uppercase"
+                      className="text-[11px] font-bold text-indigo-600 uppercase"
                     >
                       {isNewCategory ? 'Select Existing' : '+ New Category'}
                     </button>
                   </div>
                   <div className="relative">
-                    <Tag size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <Tag size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                     {isNewCategory ? (
                       <input
                         type="text"
@@ -1261,14 +1394,14 @@ export default function App() {
                         value={categoryName}
                         onChange={(e) => setCategoryName(e.target.value)}
                         placeholder="Enter category name"
-                        className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none"
+                        className="w-full pl-10 pr-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-base outline-none"
                       />
                     ) : (
                       <select
                         required
                         value={categoryName}
                         onChange={(e) => setCategoryName(e.target.value)}
-                        className="w-full pl-10 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none appearance-none"
+                        className="w-full pl-10 pr-3 py-3 bg-slate-50 border border-slate-200 rounded-xl text-base outline-none appearance-none"
                       >
                         <option value="">Select Category</option>
                         {filteredCategories.map(c => (
@@ -1514,51 +1647,89 @@ export default function App() {
               className="space-y-4"
             >
               <div className="flex items-center justify-between mb-2">
-                <h2 className="text-sm font-black text-slate-800 uppercase tracking-wider">Transaction History</h2>
-                <button 
-                  onClick={exportToCSV}
-                  className="flex items-center gap-1.5 px-2 py-1 bg-indigo-50 text-indigo-600 rounded-lg text-[9px] font-black uppercase tracking-wider hover:bg-indigo-100 transition-colors"
-                >
-                  <Download size={12} />
-                  Export
-                </button>
-              </div>
-              {transactions.map(t => (
-                <div key={t.id} className="bg-white p-2 rounded-xl shadow-sm border border-slate-100 flex items-center justify-between group relative">
-                  <div className="flex items-center gap-2">
-                    <div className={`p-1.5 rounded-lg ${t.type === 'income' ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
-                      {t.type === 'income' ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
-                    </div>
-                    <div>
-                      <p className="font-bold text-slate-900 text-xs">{t.item_name}</p>
-                      <p className="text-[9px] text-slate-500">{t.category_name} • {new Date(t.date).toLocaleDateString()}</p>
-                      {t.purchased_by && <p className="text-[8px] text-indigo-600 font-medium">By: {t.purchased_by}</p>}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <div className="text-right">
-                      <p className={`font-bold text-sm ${t.type === 'income' ? 'text-emerald-600' : 'text-rose-600'}`}>
-                        {t.type === 'income' ? '+' : '-'}₹{t.amount.toLocaleString('en-IN')}
-                      </p>
-                      {t.description && <p className="text-[8px] text-slate-400 italic max-w-[80px] truncate">{t.description}</p>}
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <button 
-                        onClick={(e) => { e.stopPropagation(); handleEdit(t); }} 
-                        className="p-1.5 text-slate-400 hover:text-indigo-600 bg-slate-50 rounded-lg"
-                      >
-                        <Edit2 size={14} />
-                      </button>
-                      <button 
-                        onClick={(e) => handleDelete(t.id, e)} 
-                        className="p-1.5 text-slate-400 hover:text-rose-600 bg-slate-50 rounded-lg"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </div>
+                <h2 className="text-base font-black text-slate-800 uppercase tracking-wider">Transaction History</h2>
+                <div className="flex items-center gap-2">
+                  <select
+                    value={historyMonth}
+                    onChange={(e) => setHistoryMonth(e.target.value)}
+                    className="px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-[10px] font-black uppercase tracking-wider outline-none"
+                  >
+                    <option value="all">All Time</option>
+                    {(() => {
+                      const now = new Date();
+                      const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+                      if (!availableMonths.includes(currentMonth)) {
+                        return (
+                          <option value={currentMonth}>
+                            {new Date().toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}
+                          </option>
+                        );
+                      }
+                      return null;
+                    })()}
+                    {availableMonths.map(m => (
+                      <option key={m} value={m}>
+                        {new Date(m + '-01').toLocaleDateString(undefined, { month: 'short', year: 'numeric' })}
+                      </option>
+                    ))}
+                  </select>
+                  <button 
+                    onClick={exportToCSV}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-[10px] font-black uppercase tracking-wider hover:bg-indigo-100 transition-colors"
+                  >
+                    <Download size={14} />
+                    Export
+                  </button>
                 </div>
-              ))}
+              </div>
+              
+              <div className="space-y-2">
+                {transactions
+                  .filter(t => historyMonth === 'all' || t.date.startsWith(historyMonth))
+                  .sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id)
+                  .map(t => (
+                  <div key={t.id} className="bg-white p-2 rounded-xl shadow-sm border border-slate-100 flex items-center justify-between group relative">
+                    <div className="flex items-center gap-3">
+                      <div className={`p-2 rounded-xl ${t.type === 'income' ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
+                        {t.type === 'income' ? <TrendingUp size={16} /> : <TrendingDown size={16} />}
+                      </div>
+                      <div>
+                        <p className="font-bold text-slate-900 text-sm">{t.item_name}</p>
+                        <p className="text-[10px] text-slate-500">{t.category_name} • {formatDateDisplay(t.date)}</p>
+                        {t.purchased_by && <p className="text-[9px] text-indigo-600 font-medium">By: {t.purchased_by}</p>}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <p className={`font-bold text-base ${t.type === 'income' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                          {t.type === 'income' ? '+' : '-'}₹{t.amount.toLocaleString('en-IN')}
+                        </p>
+                        {t.description && <p className="text-[9px] text-slate-400 italic max-w-[100px] truncate">{t.description}</p>}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button 
+                          onClick={(e) => { e.stopPropagation(); handleEdit(t); }} 
+                          className="p-2 text-slate-400 hover:text-indigo-600 bg-slate-50 rounded-lg"
+                        >
+                          <Edit2 size={16} />
+                        </button>
+                        <button 
+                          onClick={(e) => handleDelete(t.id, e)} 
+                          className="p-2 text-slate-400 hover:text-rose-600 bg-slate-50 rounded-lg"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {transactions.filter(t => historyMonth === 'all' || t.date.startsWith(historyMonth)).length === 0 && (
+                  <div className="text-center py-12 text-slate-400">
+                    <History size={48} className="mx-auto mb-2 opacity-20" />
+                    <p className="text-sm">No transactions for this period</p>
+                  </div>
+                )}
+              </div>
             </motion.div>
           )}
 
@@ -1661,6 +1832,14 @@ export default function App() {
                       {syncStatus.message}
                       {syncStatus.detail && <span className="ml-2 opacity-60 underline">Troubleshoot</span>}
                     </div>
+                    {syncStatus.type === 'error' && syncStatus.message.includes('Network') && (
+                      <button 
+                        onClick={handleGoogleLogin}
+                        className="w-full py-1.5 bg-rose-600 text-white text-[8px] font-black uppercase tracking-widest rounded-lg shadow-sm hover:bg-rose-700 active:scale-95 transition-all"
+                      >
+                        Reconnect Google Drive
+                      </button>
+                    )}
                     {showDebug && syncStatus.detail && (
                       <motion.div 
                         initial={{ opacity: 0, height: 0 }}
@@ -1685,57 +1864,57 @@ export default function App() {
               </section>
 
               <div className="flex items-center justify-between pt-2">
-                <h2 className="text-sm font-black text-slate-800 uppercase tracking-wider">Manage Data</h2>
+                <h2 className="text-base font-black text-slate-800 uppercase tracking-wider">Manage Data</h2>
                 <div className="flex gap-2">
                   <button 
                     onClick={() => setIsViewAllModalOpen(true)}
-                    className="p-2 text-indigo-600 bg-indigo-50 rounded-xl hover:bg-indigo-100 transition-colors"
+                    className="p-2.5 text-indigo-600 bg-indigo-50 rounded-xl hover:bg-indigo-100 transition-colors"
                     title="View All Categories & Items"
                   >
-                    <Database size={20} />
+                    <Database size={22} />
                   </button>
                   <button 
                     onClick={() => setView('add')}
-                    className="p-2 text-indigo-600 bg-indigo-50 rounded-xl hover:bg-indigo-100 transition-colors"
+                    className="p-2.5 text-indigo-600 bg-indigo-50 rounded-xl hover:bg-indigo-100 transition-colors"
                     title="Back to Add Transaction"
                   >
-                    <PlusCircle size={20} />
+                    <PlusCircle size={22} />
                   </button>
                 </div>
               </div>
 
               {/* Add Category Form */}
-              <section className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 space-y-3">
+              <section className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 space-y-4">
                 <div className="flex items-center gap-2 text-slate-500 mb-1">
-                  <Tag size={16} className="text-indigo-600" />
-                  <span className="text-xs font-bold uppercase tracking-wider">Add New Category</span>
+                  <Tag size={18} className="text-indigo-600" />
+                  <span className="text-sm font-bold uppercase tracking-wider">Add New Category</span>
                 </div>
-                <form onSubmit={handleAddCategory} className="space-y-3">
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-slate-400 uppercase">Category Name</label>
+                <form onSubmit={handleAddCategory} className="space-y-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase">Category Name</label>
                     <input
                       type="text"
                       value={newCatName}
                       onChange={(e) => setNewCatName(e.target.value)}
                       placeholder="e.g. Health, Entertainment"
-                      className="w-full p-2 bg-slate-50 border border-slate-200 rounded-xl text-xs outline-none"
+                      className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm outline-none"
                       required
                     />
                   </div>
-                  <div className="space-y-1">
-                    <label className="text-[9px] font-bold text-slate-400 uppercase">Type</label>
-                    <div className="flex p-1 bg-slate-100 rounded-xl">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase">Type</label>
+                    <div className="flex p-1.5 bg-slate-100 rounded-xl">
                       <button
                         type="button"
                         onClick={() => setNewCatType('expense')}
-                        className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-all ${newCatType === 'expense' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500'}`}
+                        className={`flex-1 py-2 rounded-lg text-[11px] font-bold transition-all ${newCatType === 'expense' ? 'bg-white text-rose-600 shadow-sm' : 'text-slate-500'}`}
                       >
                         Expense
                       </button>
                       <button
                         type="button"
                         onClick={() => setNewCatType('income')}
-                        className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-all ${newCatType === 'income' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}
+                        className={`flex-1 py-2 rounded-lg text-[11px] font-bold transition-all ${newCatType === 'income' ? 'bg-white text-emerald-600 shadow-sm' : 'text-slate-500'}`}
                       >
                         Income
                       </button>
@@ -1838,7 +2017,7 @@ export default function App() {
       {/* Delete Category Modal */}
       <AnimatePresence>
         {isDeleteCatModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
             <motion.div
               initial={{ opacity: 0, y: 100 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1895,7 +2074,7 @@ export default function App() {
       {/* Delete Item Modal */}
       <AnimatePresence>
         {isDeleteItemModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
             <motion.div
               initial={{ opacity: 0, y: 100 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1973,7 +2152,7 @@ export default function App() {
       {/* View All Categories & Items Modal */}
       <AnimatePresence>
         {isViewAllModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+          <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -2038,50 +2217,50 @@ export default function App() {
           onClick={() => setView('dashboard')}
           className={`flex flex-col items-center gap-1.5 transition-all active:scale-90 ${view === 'dashboard' ? 'text-indigo-600' : 'text-slate-400'}`}
         >
-          <div className={`p-2 rounded-xl ${view === 'dashboard' ? 'bg-indigo-50' : ''}`}>
-            <LayoutDashboard size={22} />
+          <div className={`p-2.5 rounded-xl ${view === 'dashboard' ? 'bg-indigo-50' : ''}`}>
+            <LayoutDashboard size={24} />
           </div>
-          <span className="text-[9px] font-black uppercase tracking-widest">Home</span>
+          <span className="text-[10px] font-black uppercase tracking-widest">Home</span>
         </button>
 
         <button 
           onClick={() => setView('add')}
           className={`flex flex-col items-center gap-1.5 transition-all active:scale-90 ${view === 'add' ? 'text-indigo-600' : 'text-slate-400'}`}
         >
-          <div className={`p-2 rounded-xl ${view === 'add' ? 'bg-indigo-50' : ''}`}>
-            <Plus size={22} />
+          <div className={`p-2.5 rounded-xl ${view === 'add' ? 'bg-indigo-50' : ''}`}>
+            <Plus size={24} />
           </div>
-          <span className="text-[9px] font-black uppercase tracking-widest">Add</span>
+          <span className="text-[10px] font-black uppercase tracking-widest">Add</span>
         </button>
 
         <button 
           onClick={() => setView('insights')}
           className={`flex flex-col items-center gap-1.5 transition-all active:scale-90 ${view === 'insights' ? 'text-indigo-600' : 'text-slate-400'}`}
         >
-          <div className={`p-2 rounded-xl ${view === 'insights' ? 'bg-indigo-50' : ''}`}>
-            <BarChart3 size={22} />
+          <div className={`p-2.5 rounded-xl ${view === 'insights' ? 'bg-indigo-50' : ''}`}>
+            <BarChart3 size={24} />
           </div>
-          <span className="text-[9px] font-black uppercase tracking-widest">Insights</span>
+          <span className="text-[10px] font-black uppercase tracking-widest">Insights</span>
         </button>
 
         <button 
           onClick={() => setView('history')}
           className={`flex flex-col items-center gap-1.5 transition-all active:scale-90 ${view === 'history' ? 'text-indigo-600' : 'text-slate-400'}`}
         >
-          <div className={`p-2 rounded-xl ${view === 'history' ? 'bg-indigo-50' : ''}`}>
-            <History size={22} />
+          <div className={`p-2.5 rounded-xl ${view === 'history' ? 'bg-indigo-50' : ''}`}>
+            <History size={24} />
           </div>
-          <span className="text-[9px] font-black uppercase tracking-widest">History</span>
+          <span className="text-[10px] font-black uppercase tracking-widest">History</span>
         </button>
 
         <button 
           onClick={() => setView('manage')}
           className={`flex flex-col items-center gap-1.5 transition-all active:scale-90 ${view === 'manage' ? 'text-indigo-600' : 'text-slate-400'}`}
         >
-          <div className={`p-2 rounded-xl ${view === 'manage' ? 'bg-indigo-50' : ''}`}>
-            <Settings size={22} />
+          <div className={`p-2.5 rounded-xl ${view === 'manage' ? 'bg-indigo-50' : ''}`}>
+            <Settings size={24} />
           </div>
-          <span className="text-[9px] font-black uppercase tracking-widest">Manage</span>
+          <span className="text-[10px] font-black uppercase tracking-widest">Manage</span>
         </button>
       </nav>
 
@@ -2092,7 +2271,7 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-6"
           >
             <motion.div
               initial={{ scale: 0.9, opacity: 0 }}
@@ -2133,7 +2312,7 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-6"
           >
             <motion.div
               initial={{ y: 50, opacity: 0 }}
@@ -2181,12 +2360,13 @@ export default function App() {
                   {calendarDays.map((day, idx) => {
                     if (!day) return <div key={`empty-${idx}`} className="h-8" />;
                     
-                    const isSelected = day.toISOString().split('T')[0] === date;
-                    const isToday = day.toISOString().split('T')[0] === new Date().toISOString().split('T')[0];
+                    const dayStr = toLocalDateString(day);
+                    const isSelected = dayStr === date;
+                    const isToday = dayStr === toLocalDateString(new Date());
                     
                     return (
                       <button
-                        key={day.toISOString()}
+                        key={dayStr}
                         onClick={() => handleDateSelect(day)}
                         className={`h-8 w-8 rounded-full text-xs font-medium flex items-center justify-center transition-all
                           ${isSelected ? 'bg-indigo-600 text-white shadow-md shadow-indigo-200' : 
